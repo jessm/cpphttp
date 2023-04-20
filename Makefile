@@ -28,10 +28,11 @@ test: $(TARGET)
 load: $(TARGET)
 	rm -f perf.* out.svg
 	perf record -F 1000 -g --call-graph dwarf ./build/server &
-	locust -f locustfile.py -u 500 -r 100 -t 5 -H http://localhost:8080 --headless --only-summary || true
+	locust -f locustfile.py -u 500 -r 100 -t 5 -H http://localhost:8080 --headless --only-summary --csv load_test || true
 	killall -INT ./build/server
 	sleep 1
 	perf script | ./FlameGraph/stackcollapse-perf.pl | ./FlameGraph/flamegraph.pl > out.svg
+	python3 summarize.py
 
 .PHONY:
 clean:

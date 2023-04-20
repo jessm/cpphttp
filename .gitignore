@@ -2,3 +2,4 @@ build
 __pycache__
 out.svg
 perf.data
+load_test_*.csv

@@ -1,0 +1,1301 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="422" onload="init(evt)" viewBox="0 0 1200 422" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="422.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="405" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="405" > </text>
+<g id="frames">
+<g >
+<title>_int_free (3,000,000 samples, 2.44%)</title><rect x="547.2" y="117" width="28.8" height="15.0" fill="rgb(242,70,53)" rx="2" ry="2" />
+<text  x="550.24" y="127.5" >_i..</text>
+</g>
+<g >
+<title>main (123,000,000 samples, 100.00%)</title><rect x="10.0" y="293" width="1180.0" height="15.0" fill="rgb(227,192,13)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" >main</text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;HttpMethod, std::pair&lt;HttpMethod const, std::function&lt;HttpResponse  (1,000,000 samples, 0.81%)</title><rect x="940.6" y="165" width="9.6" height="15.0" fill="rgb(205,76,22)" rx="2" ry="2" />
+<text  x="943.57" y="175.5" ></text>
+</g>
+<g >
+<title>std::ostream::operator&lt;&lt; (4,000,000 samples, 3.25%)</title><rect x="336.2" y="245" width="38.4" height="15.0" fill="rgb(222,14,3)" rx="2" ry="2" />
+<text  x="339.18" y="255.5" >std..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::compare (2,000,000 samples, 1.63%)</title><rect x="1170.8" y="245" width="19.2" height="15.0" fill="rgb(208,195,5)" rx="2" ry="2" />
+<text  x="1173.81" y="255.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_M_assign&lt;std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt; const&amp;, std::__detail::_AllocNode&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt; &gt; (8,000,000 samples, 6.50%)</title><rect x="432.1" y="213" width="76.8" height="15.0" fill="rgb(252,163,36)" rx="2" ry="2" />
+<text  x="435.11" y="223.5" >std::_Ha..</text>
+</g>
+<g >
+<title>std::unordered_map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::unordered_map (3,000,000 samples, 2.44%)</title><rect x="595.2" y="229" width="28.8" height="15.0" fill="rgb(209,13,26)" rx="2" ry="2" />
+<text  x="598.20" y="239.5" >st..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::operator= (1,000,000 samples, 0.81%)</title><rect x="652.8" y="229" width="9.6" height="15.0" fill="rgb(214,112,12)" rx="2" ry="2" />
+<text  x="655.76" y="239.5" ></text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::pair (1,000,000 samples, 0.81%)</title><rect x="489.7" y="133" width="9.6" height="15.0" fill="rgb(236,151,16)" rx="2" ry="2" />
+<text  x="492.67" y="143.5" ></text>
+</g>
+<g >
+<title>strlen@plt (1,000,000 samples, 0.81%)</title><rect x="643.2" y="197" width="9.6" height="15.0" fill="rgb(248,176,18)" rx="2" ry="2" />
+<text  x="646.17" y="207.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Select1st, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, true&gt;::_M_hash_code (1,000,000 samples, 0.81%)</title><rect x="422.5" y="213" width="9.6" height="15.0" fill="rgb(206,214,12)" rx="2" ry="2" />
+<text  x="425.52" y="223.5" ></text>
+</g>
+<g >
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast (2,000,000 samples, 1.63%)</title><rect x="153.9" y="165" width="19.2" height="15.0" fill="rgb(234,226,27)" rx="2" ry="2" />
+<text  x="156.90" y="175.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (2,000,000 samples, 1.63%)</title><rect x="892.6" y="37" width="19.2" height="15.0" fill="rgb(249,149,36)" rx="2" ry="2" />
+<text  x="895.60" y="47.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;HttpMethod, std::pair&lt;HttpMethod const, std::function&lt;HttpResponse  (3,000,000 samples, 2.44%)</title><rect x="931.0" y="229" width="28.8" height="15.0" fill="rgb(222,173,24)" rx="2" ry="2" />
+<text  x="933.98" y="239.5" >st..</text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_allocate_node&lt;std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (2,000,000 samples, 1.63%)</title><rect x="403.3" y="197" width="19.2" height="15.0" fill="rgb(208,79,30)" rx="2" ry="2" />
+<text  x="406.33" y="207.5" ></text>
+</g>
+<g >
+<title>std::has_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt; (1,000,000 samples, 0.81%)</title><rect x="221.1" y="197" width="9.6" height="15.0" fill="rgb(207,98,32)" rx="2" ry="2" />
+<text  x="224.06" y="207.5" ></text>
+</g>
+<g >
+<title>std::__invoke_r&lt;HttpResponse, main::{lambda (3,000,000 samples, 2.44%)</title><rect x="892.6" y="213" width="28.8" height="15.0" fill="rgb(229,71,38)" rx="2" ry="2" />
+<text  x="895.60" y="223.5" >st..</text>
+</g>
+<g >
+<title>std::getline&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;@plt (1,000,000 samples, 0.81%)</title><rect x="317.0" y="245" width="9.6" height="15.0" fill="rgb(246,34,48)" rx="2" ry="2" />
+<text  x="319.99" y="255.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; const&amp;&gt; (2,000,000 samples, 1.63%)</title><rect x="604.8" y="133" width="19.2" height="15.0" fill="rgb(207,211,20)" rx="2" ry="2" />
+<text  x="607.80" y="143.5" ></text>
+</g>
+<g >
+<title>__GI_strlen (1,000,000 samples, 0.81%)</title><rect x="1180.4" y="229" width="9.6" height="15.0" fill="rgb(225,191,6)" rx="2" ry="2" />
+<text  x="1183.41" y="239.5" ></text>
+</g>
+<g >
+<title>HttpResponse::~HttpResponse (1,000,000 samples, 0.81%)</title><rect x="796.7" y="245" width="9.6" height="15.0" fill="rgb(210,113,49)" rx="2" ry="2" />
+<text  x="799.67" y="255.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Mod_range_hashing::operator (2,000,000 samples, 1.63%)</title><rect x="460.9" y="165" width="19.2" height="15.0" fill="rgb(220,98,38)" rx="2" ry="2" />
+<text  x="463.89" y="175.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::operator[] (1,000,000 samples, 0.81%)</title><rect x="672.0" y="213" width="9.5" height="15.0" fill="rgb(243,115,24)" rx="2" ry="2" />
+<text  x="674.95" y="223.5" ></text>
+</g>
+<g >
+<title>all (123,000,000 samples, 100%)</title><rect x="10.0" y="373" width="1180.0" height="15.0" fill="rgb(223,2,42)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_Hashtable (3,000,000 samples, 2.44%)</title><rect x="595.2" y="213" width="28.8" height="15.0" fill="rgb(244,75,15)" rx="2" ry="2" />
+<text  x="598.20" y="223.5" >st..</text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_M_assign&lt;std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt; const&amp;, std::__detail::_AllocNode&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt; &gt; (3,000,000 samples, 2.44%)</title><rect x="595.2" y="197" width="28.8" height="15.0" fill="rgb(220,114,37)" rx="2" ry="2" />
+<text  x="598.20" y="207.5" >st..</text>
+</g>
+<g >
+<title>__fixunstfdi (1,000,000 samples, 0.81%)</title><rect x="758.3" y="165" width="9.6" height="15.0" fill="rgb(236,14,18)" rx="2" ry="2" />
+<text  x="761.29" y="175.5" ></text>
+</g>
+<g >
+<title>_start (123,000,000 samples, 100.00%)</title><rect x="10.0" y="325" width="1180.0" height="15.0" fill="rgb(232,175,9)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >_start</text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::~pair (3,000,000 samples, 2.44%)</title><rect x="547.2" y="133" width="28.8" height="15.0" fill="rgb(234,32,22)" rx="2" ry="2" />
+<text  x="550.24" y="143.5" >st..</text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_Hashtable (8,000,000 samples, 6.50%)</title><rect x="432.1" y="229" width="76.8" height="15.0" fill="rgb(207,48,18)" rx="2" ry="2" />
+<text  x="435.11" y="239.5" >std::_Ha..</text>
+</g>
+<g >
+<title>__dynamic_cast@plt (1,000,000 samples, 0.81%)</title><rect x="86.7" y="181" width="9.6" height="15.0" fill="rgb(213,181,1)" rx="2" ry="2" />
+<text  x="89.75" y="191.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_append@plt (1,000,000 samples, 0.81%)</title><rect x="710.3" y="213" width="9.6" height="15.0" fill="rgb(207,29,46)" rx="2" ry="2" />
+<text  x="713.33" y="223.5" ></text>
+</g>
+<g >
+<title>checked_request2size (1,000,000 samples, 0.81%)</title><rect x="614.4" y="53" width="9.6" height="15.0" fill="rgb(254,155,37)" rx="2" ry="2" />
+<text  x="617.39" y="63.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_base&lt;HttpMethod, std::pair&lt;HttpMethod const, std::function&lt;HttpResponse  (1,000,000 samples, 0.81%)</title><rect x="940.6" y="181" width="9.6" height="15.0" fill="rgb(231,186,17)" rx="2" ry="2" />
+<text  x="943.57" y="191.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::clear (1,000,000 samples, 0.81%)</title><rect x="796.7" y="197" width="9.6" height="15.0" fill="rgb(213,118,0)" rx="2" ry="2" />
+<text  x="799.67" y="207.5" ></text>
+</g>
+<g >
+<title>server (123,000,000 samples, 100.00%)</title><rect x="10.0" y="357" width="1180.0" height="15.0" fill="rgb(229,138,17)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >server</text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_deallocate_node (4,000,000 samples, 3.25%)</title><rect x="537.6" y="181" width="38.4" height="15.0" fill="rgb(235,151,40)" rx="2" ry="2" />
+<text  x="540.64" y="191.5" >std..</text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::~_Hashtable (3,000,000 samples, 2.44%)</title><rect x="892.6" y="149" width="28.8" height="15.0" fill="rgb(226,86,33)" rx="2" ry="2" />
+<text  x="895.60" y="159.5" >st..</text>
+</g>
+<g >
+<title>std::use_facet&lt;std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt; (2,000,000 samples, 1.63%)</title><rect x="153.9" y="197" width="19.2" height="15.0" fill="rgb(216,143,1)" rx="2" ry="2" />
+<text  x="156.90" y="207.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringbuf&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::overflow (3,000,000 samples, 2.44%)</title><rect x="345.8" y="197" width="28.8" height="15.0" fill="rgb(214,36,4)" rx="2" ry="2" />
+<text  x="348.77" y="207.5" >st..</text>
+</g>
+<g >
+<title>__GI___close (4,000,000 samples, 3.25%)</title><rect x="959.8" y="261" width="38.3" height="15.0" fill="rgb(227,133,37)" rx="2" ry="2" />
+<text  x="962.76" y="271.5" >__G..</text>
+</g>
+<g >
+<title>std::__detail::_Map_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt;, true&gt;::operator[] (6,000,000 samples, 4.88%)</title><rect x="374.6" y="229" width="57.5" height="15.0" fill="rgb(241,78,28)" rx="2" ry="2" />
+<text  x="377.55" y="239.5" >std::_..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::append (1,000,000 samples, 0.81%)</title><rect x="719.9" y="213" width="9.6" height="15.0" fill="rgb(251,168,23)" rx="2" ry="2" />
+<text  x="722.92" y="223.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::operator[] (6,000,000 samples, 4.88%)</title><rect x="374.6" y="245" width="57.5" height="15.0" fill="rgb(220,140,6)" rx="2" ry="2" />
+<text  x="377.55" y="255.5" >std::u..</text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_deallocate_nodes (4,000,000 samples, 3.25%)</title><rect x="537.6" y="197" width="38.4" height="15.0" fill="rgb(206,116,21)" rx="2" ry="2" />
+<text  x="540.64" y="207.5" >std..</text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt; (1,000,000 samples, 0.81%)</title><rect x="403.3" y="149" width="9.6" height="15.0" fill="rgb(234,124,9)" rx="2" ry="2" />
+<text  x="406.33" y="159.5" ></text>
+</g>
+<g >
+<title>__GI_memcpy (1,000,000 samples, 0.81%)</title><rect x="604.8" y="85" width="9.6" height="15.0" fill="rgb(230,72,7)" rx="2" ry="2" />
+<text  x="607.80" y="95.5" ></text>
+</g>
+<g >
+<title>memchr@plt (1,000,000 samples, 0.81%)</title><rect x="1151.6" y="245" width="9.6" height="15.0" fill="rgb(211,45,8)" rx="2" ry="2" />
+<text  x="1154.63" y="255.5" ></text>
+</g>
+<g >
+<title>__addtf3 (1,000,000 samples, 0.81%)</title><rect x="384.1" y="181" width="9.6" height="15.0" fill="rgb(213,192,37)" rx="2" ry="2" />
+<text  x="387.15" y="191.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string&lt;std::allocator&lt;char&gt; &gt; (3,000,000 samples, 2.44%)</title><rect x="624.0" y="229" width="28.8" height="15.0" fill="rgb(228,19,42)" rx="2" ry="2" />
+<text  x="626.98" y="239.5" >st..</text>
+</g>
+<g >
+<title>operator new (1,000,000 samples, 0.81%)</title><rect x="29.2" y="229" width="9.6" height="15.0" fill="rgb(248,103,9)" rx="2" ry="2" />
+<text  x="32.19" y="239.5" ></text>
+</g>
+<g >
+<title>std::__copy_streambufs_eof&lt;char, std::char_traits&lt;char&gt; &gt; (4,000,000 samples, 3.25%)</title><rect x="336.2" y="229" width="38.4" height="15.0" fill="rgb(206,134,53)" rx="2" ry="2" />
+<text  x="339.18" y="239.5" >std..</text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_deallocate_nodes (3,000,000 samples, 2.44%)</title><rect x="892.6" y="117" width="28.8" height="15.0" fill="rgb(234,40,14)" rx="2" ry="2" />
+<text  x="895.60" y="127.5" >st..</text>
+</g>
+<g >
+<title>std::__cxx11::to_string (3,000,000 samples, 2.44%)</title><rect x="662.4" y="229" width="28.7" height="15.0" fill="rgb(235,1,1)" rx="2" ry="2" />
+<text  x="665.36" y="239.5" >st..</text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;&amp;&amp;&gt;, std::tuple&lt;&gt; &gt; (1,000,000 samples, 0.81%)</title><rect x="787.1" y="149" width="9.6" height="15.0" fill="rgb(214,144,41)" rx="2" ry="2" />
+<text  x="790.07" y="159.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_deallocate_nodes (1,000,000 samples, 0.81%)</title><rect x="796.7" y="181" width="9.6" height="15.0" fill="rgb(236,78,5)" rx="2" ry="2" />
+<text  x="799.67" y="191.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct_aux&lt;char const*&gt; (1,000,000 samples, 0.81%)</title><rect x="1122.8" y="229" width="9.6" height="15.0" fill="rgb(249,159,18)" rx="2" ry="2" />
+<text  x="1125.85" y="239.5" ></text>
+</g>
+<g >
+<title>__GI_memcpy (1,000,000 samples, 0.81%)</title><rect x="19.6" y="229" width="9.6" height="15.0" fill="rgb(231,191,8)" rx="2" ry="2" />
+<text  x="22.59" y="239.5" ></text>
+</g>
+<g >
+<title>std::_Any_data::_M_access (1,000,000 samples, 0.81%)</title><rect x="921.4" y="165" width="9.6" height="15.0" fill="rgb(210,191,8)" rx="2" ry="2" />
+<text  x="924.38" y="175.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;HttpResponse  (5,000,000 samples, 4.07%)</title><rect x="873.4" y="229" width="48.0" height="15.0" fill="rgb(246,161,33)" rx="2" ry="2" />
+<text  x="876.41" y="239.5" >std:..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt;@plt (1,000,000 samples, 0.81%)</title><rect x="489.7" y="117" width="9.6" height="15.0" fill="rgb(226,208,26)" rx="2" ry="2" />
+<text  x="492.67" y="127.5" ></text>
+</g>
+<g >
+<title>__extendsftf2 (1,000,000 samples, 0.81%)</title><rect x="393.7" y="181" width="9.6" height="15.0" fill="rgb(243,125,11)" rx="2" ry="2" />
+<text  x="396.74" y="191.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_deallocate_node_ptr (3,000,000 samples, 2.44%)</title><rect x="892.6" y="85" width="28.8" height="15.0" fill="rgb(254,227,46)" rx="2" ry="2" />
+<text  x="895.60" y="95.5" >st..</text>
+</g>
+<g >
+<title>__GI_strcmp (1,000,000 samples, 0.81%)</title><rect x="77.2" y="149" width="9.5" height="15.0" fill="rgb(210,30,15)" rx="2" ry="2" />
+<text  x="80.15" y="159.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::find (3,000,000 samples, 2.44%)</title><rect x="1132.4" y="261" width="28.8" height="15.0" fill="rgb(211,164,6)" rx="2" ry="2" />
+<text  x="1135.44" y="271.5" >st..</text>
+</g>
+<g >
+<title>operator new (1,000,000 samples, 0.81%)</title><rect x="595.2" y="117" width="9.6" height="15.0" fill="rgb(249,119,54)" rx="2" ry="2" />
+<text  x="598.20" y="127.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt;::destroy&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; (3,000,000 samples, 2.44%)</title><rect x="547.2" y="149" width="28.8" height="15.0" fill="rgb(214,119,24)" rx="2" ry="2" />
+<text  x="550.24" y="159.5" >__..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char const*&gt; (1,000,000 samples, 0.81%)</title><rect x="624.0" y="213" width="9.6" height="15.0" fill="rgb(240,195,34)" rx="2" ry="2" />
+<text  x="626.98" y="223.5" ></text>
+</g>
+<g >
+<title>std::_Function_base::_Base_manager&lt;main::{lambda (1,000,000 samples, 0.81%)</title><rect x="921.4" y="197" width="9.6" height="15.0" fill="rgb(241,86,46)" rx="2" ry="2" />
+<text  x="924.38" y="207.5" ></text>
+</g>
+<g >
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast (1,000,000 samples, 0.81%)</title><rect x="134.7" y="165" width="9.6" height="15.0" fill="rgb(231,20,48)" rx="2" ry="2" />
+<text  x="137.72" y="175.5" ></text>
+</g>
+<g >
+<title>__dynamic_cast (1,000,000 samples, 0.81%)</title><rect x="134.7" y="181" width="9.6" height="15.0" fill="rgb(205,204,12)" rx="2" ry="2" />
+<text  x="137.72" y="191.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_Scoped_node::_Scoped_node&lt;std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (2,000,000 samples, 1.63%)</title><rect x="403.3" y="213" width="19.2" height="15.0" fill="rgb(228,135,51)" rx="2" ry="2" />
+<text  x="406.33" y="223.5" ></text>
+</g>
+<g >
+<title>__libc_accept (5,000,000 samples, 4.07%)</title><rect x="1026.9" y="261" width="48.0" height="15.0" fill="rgb(217,30,49)" rx="2" ry="2" />
+<text  x="1029.91" y="271.5" >__li..</text>
+</g>
+<g >
+<title>std::__addressof&lt;main::{lambda (1,000,000 samples, 0.81%)</title><rect x="883.0" y="197" width="9.6" height="15.0" fill="rgb(212,100,47)" rx="2" ry="2" />
+<text  x="886.01" y="207.5" ></text>
+</g>
+<g >
+<title>std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator (1,000,000 samples, 0.81%)</title><rect x="422.5" y="197" width="9.6" height="15.0" fill="rgb(207,214,4)" rx="2" ry="2" />
+<text  x="425.52" y="207.5" ></text>
+</g>
+<g >
+<title>HttpRequest::HttpRequest (3,000,000 samples, 2.44%)</title><rect x="595.2" y="245" width="28.8" height="15.0" fill="rgb(231,4,44)" rx="2" ry="2" />
+<text  x="598.20" y="255.5" >Ht..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt; (2,000,000 samples, 1.63%)</title><rect x="604.8" y="101" width="19.2" height="15.0" fill="rgb(226,47,3)" rx="2" ry="2" />
+<text  x="607.80" y="111.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::end (1,000,000 samples, 0.81%)</title><rect x="748.7" y="229" width="9.6" height="15.0" fill="rgb(247,123,1)" rx="2" ry="2" />
+<text  x="751.70" y="239.5" ></text>
+</g>
+<g >
+<title>std::operator+&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (5,000,000 samples, 4.07%)</title><rect x="700.7" y="229" width="48.0" height="15.0" fill="rgb(229,48,31)" rx="2" ry="2" />
+<text  x="703.73" y="239.5" >std:..</text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; const&amp;&gt; (2,000,000 samples, 1.63%)</title><rect x="604.8" y="149" width="19.2" height="15.0" fill="rgb(227,34,17)" rx="2" ry="2" />
+<text  x="607.80" y="159.5" ></text>
+</g>
+<g >
+<title>std::has_facet&lt;std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt; (3,000,000 samples, 2.44%)</title><rect x="115.5" y="197" width="28.8" height="15.0" fill="rgb(226,75,18)" rx="2" ry="2" />
+<text  x="118.53" y="207.5" >st..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_append (3,000,000 samples, 2.44%)</title><rect x="1074.9" y="261" width="28.8" height="15.0" fill="rgb(224,45,11)" rx="2" ry="2" />
+<text  x="1077.88" y="271.5" >st..</text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt;::allocate (1,000,000 samples, 0.81%)</title><rect x="595.2" y="133" width="9.6" height="15.0" fill="rgb(219,172,36)" rx="2" ry="2" />
+<text  x="598.20" y="143.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;HttpMethod, std::pair&lt;HttpMethod const, std::function&lt;HttpResponse  (1,000,000 samples, 0.81%)</title><rect x="950.2" y="213" width="9.6" height="15.0" fill="rgb(223,74,11)" rx="2" ry="2" />
+<text  x="953.16" y="223.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::clear (4,000,000 samples, 3.25%)</title><rect x="537.6" y="213" width="38.4" height="15.0" fill="rgb(214,202,6)" rx="2" ry="2" />
+<text  x="540.64" y="223.5" >std..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_string (2,000,000 samples, 1.63%)</title><rect x="518.5" y="245" width="19.1" height="15.0" fill="rgb(246,22,54)" rx="2" ry="2" />
+<text  x="521.46" y="255.5" ></text>
+</g>
+<g >
+<title>std::has_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt; (1,000,000 samples, 0.81%)</title><rect x="105.9" y="197" width="9.6" height="15.0" fill="rgb(229,1,39)" rx="2" ry="2" />
+<text  x="108.93" y="207.5" ></text>
+</g>
+<g >
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast (1,000,000 samples, 0.81%)</title><rect x="105.9" y="165" width="9.6" height="15.0" fill="rgb(243,225,6)" rx="2" ry="2" />
+<text  x="108.93" y="175.5" ></text>
+</g>
+<g >
+<title>std::operator==&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (2,000,000 samples, 1.63%)</title><rect x="1170.8" y="261" width="19.2" height="15.0" fill="rgb(228,158,22)" rx="2" ry="2" />
+<text  x="1173.81" y="271.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::destroy&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; (3,000,000 samples, 2.44%)</title><rect x="547.2" y="165" width="28.8" height="15.0" fill="rgb(244,18,39)" rx="2" ry="2" />
+<text  x="550.24" y="175.5" >st..</text>
+</g>
+<g >
+<title>Server::start (123,000,000 samples, 100.00%)</title><rect x="10.0" y="277" width="1180.0" height="15.0" fill="rgb(224,13,29)" rx="2" ry="2" />
+<text  x="13.00" y="287.5" >Server::start</text>
+</g>
+<g >
+<title>std::function&lt;HttpResponse  (6,000,000 samples, 4.88%)</title><rect x="873.4" y="245" width="57.6" height="15.0" fill="rgb(221,198,23)" rx="2" ry="2" />
+<text  x="876.41" y="255.5" >std::f..</text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_deallocate_node_ptr (1,000,000 samples, 0.81%)</title><rect x="796.7" y="149" width="9.6" height="15.0" fill="rgb(212,27,7)" rx="2" ry="2" />
+<text  x="799.67" y="159.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_mutate (3,000,000 samples, 2.44%)</title><rect x="1074.9" y="245" width="28.8" height="15.0" fill="rgb(233,83,47)" rx="2" ry="2" />
+<text  x="1077.88" y="255.5" >st..</text>
+</g>
+<g >
+<title>std::unordered_map&lt;HttpMethod, std::function&lt;HttpResponse  (3,000,000 samples, 2.44%)</title><rect x="931.0" y="245" width="28.8" height="15.0" fill="rgb(235,49,46)" rx="2" ry="2" />
+<text  x="933.98" y="255.5" >st..</text>
+</g>
+<g >
+<title>std::unordered_map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::~unordered_map (4,000,000 samples, 3.25%)</title><rect x="537.6" y="245" width="38.4" height="15.0" fill="rgb(213,140,52)" rx="2" ry="2" />
+<text  x="540.64" y="255.5" >std..</text>
+</g>
+<g >
+<title>HttpResponse::to_string[abi:cxx11] (18,000,000 samples, 14.63%)</title><rect x="624.0" y="245" width="172.7" height="15.0" fill="rgb(246,124,24)" rx="2" ry="2" />
+<text  x="626.98" y="255.5" >HttpResponse::to_strin..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_istringstream&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_istringstream (17,000,000 samples, 13.82%)</title><rect x="19.6" y="245" width="163.1" height="15.0" fill="rgb(206,39,23)" rx="2" ry="2" />
+<text  x="22.59" y="255.5" >std::__cxx11::basic_i..</text>
+</g>
+<g >
+<title>std::unordered_map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::operator[] (4,000,000 samples, 3.25%)</title><rect x="758.3" y="229" width="38.4" height="15.0" fill="rgb(245,21,23)" rx="2" ry="2" />
+<text  x="761.29" y="239.5" >std..</text>
+</g>
+<g >
+<title>__dynamic_cast (1,000,000 samples, 0.81%)</title><rect x="144.3" y="181" width="9.6" height="15.0" fill="rgb(253,43,24)" rx="2" ry="2" />
+<text  x="147.31" y="191.5" ></text>
+</g>
+<g >
+<title>std::getline&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (5,000,000 samples, 4.07%)</title><rect x="269.0" y="245" width="48.0" height="15.0" fill="rgb(251,199,40)" rx="2" ry="2" />
+<text  x="272.02" y="255.5" >std:..</text>
+</g>
+<g >
+<title>std::istream::sentry::sentry (1,000,000 samples, 0.81%)</title><rect x="307.4" y="229" width="9.6" height="15.0" fill="rgb(226,176,22)" rx="2" ry="2" />
+<text  x="310.40" y="239.5" ></text>
+</g>
+<g >
+<title>free@plt (1,000,000 samples, 0.81%)</title><rect x="863.8" y="245" width="9.6" height="15.0" fill="rgb(238,160,34)" rx="2" ry="2" />
+<text  x="866.82" y="255.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; const&amp;&gt; (1,000,000 samples, 0.81%)</title><rect x="489.7" y="149" width="9.6" height="15.0" fill="rgb(247,153,52)" rx="2" ry="2" />
+<text  x="492.67" y="159.5" ></text>
+</g>
+<g >
+<title>std::operator&gt;&gt;&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (1,000,000 samples, 0.81%)</title><rect x="326.6" y="245" width="9.6" height="15.0" fill="rgb(249,4,25)" rx="2" ry="2" />
+<text  x="329.59" y="255.5" ></text>
+</g>
+<g >
+<title>__GI_memchr (2,000,000 samples, 1.63%)</title><rect x="278.6" y="229" width="19.2" height="15.0" fill="rgb(233,96,36)" rx="2" ry="2" />
+<text  x="281.62" y="239.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringstream&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_stringstream (2,000,000 samples, 1.63%)</title><rect x="211.5" y="245" width="19.2" height="15.0" fill="rgb(224,28,51)" rx="2" ry="2" />
+<text  x="214.46" y="255.5" ></text>
+</g>
+<g >
+<title>std::function&lt;HttpResponse  (1,000,000 samples, 0.81%)</title><rect x="921.4" y="229" width="9.6" height="15.0" fill="rgb(230,134,47)" rx="2" ry="2" />
+<text  x="924.38" y="239.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;HttpMethod, std::pair&lt;HttpMethod const, std::function&lt;HttpResponse  (1,000,000 samples, 0.81%)</title><rect x="940.6" y="213" width="9.6" height="15.0" fill="rgb(236,225,48)" rx="2" ry="2" />
+<text  x="943.57" y="223.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;HttpResponse  (1,000,000 samples, 0.81%)</title><rect x="921.4" y="213" width="9.6" height="15.0" fill="rgb(239,37,39)" rx="2" ry="2" />
+<text  x="924.38" y="223.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct_aux&lt;char const*&gt; (1,000,000 samples, 0.81%)</title><rect x="624.0" y="197" width="9.6" height="15.0" fill="rgb(232,168,36)" rx="2" ry="2" />
+<text  x="626.98" y="207.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt;::deallocate (3,000,000 samples, 2.44%)</title><rect x="892.6" y="53" width="28.8" height="15.0" fill="rgb(253,169,0)" rx="2" ry="2" />
+<text  x="895.60" y="63.5" >__..</text>
+</g>
+<g >
+<title>std::locale::id::_M_id (1,000,000 samples, 0.81%)</title><rect x="96.3" y="181" width="9.6" height="15.0" fill="rgb(237,149,6)" rx="2" ry="2" />
+<text  x="99.34" y="191.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_M_allocate_buckets (2,000,000 samples, 1.63%)</title><rect x="432.1" y="197" width="19.2" height="15.0" fill="rgb(234,184,51)" rx="2" ry="2" />
+<text  x="435.11" y="207.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_allocate_node&lt;std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;&amp;&amp;&gt;, std::tuple&lt;&gt; &gt; (2,000,000 samples, 1.63%)</title><rect x="777.5" y="181" width="19.2" height="15.0" fill="rgb(254,67,3)" rx="2" ry="2" />
+<text  x="780.48" y="191.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_allocate_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; const&amp;&gt; (2,000,000 samples, 1.63%)</title><rect x="480.1" y="181" width="19.2" height="15.0" fill="rgb(234,110,15)" rx="2" ry="2" />
+<text  x="483.08" y="191.5" ></text>
+</g>
+<g >
+<title>__dynamic_cast (3,000,000 samples, 2.44%)</title><rect x="58.0" y="181" width="28.7" height="15.0" fill="rgb(242,71,14)" rx="2" ry="2" />
+<text  x="60.97" y="191.5" >__..</text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_ebo_helper&lt;1, std::hash&lt;HttpMethod&gt;, true&gt;::_M_cget (1,000,000 samples, 0.81%)</title><rect x="950.2" y="181" width="9.6" height="15.0" fill="rgb(245,132,5)" rx="2" ry="2" />
+<text  x="953.16" y="191.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;HttpMethod, std::pair&lt;HttpMethod const, std::function&lt;HttpResponse  (1,000,000 samples, 0.81%)</title><rect x="950.2" y="197" width="9.6" height="15.0" fill="rgb(237,5,11)" rx="2" ry="2" />
+<text  x="953.16" y="207.5" ></text>
+</g>
+<g >
+<title>std::allocator&lt;char&gt;::allocator (1,000,000 samples, 0.81%)</title><rect x="1161.2" y="261" width="9.6" height="15.0" fill="rgb(229,199,28)" rx="2" ry="2" />
+<text  x="1164.22" y="271.5" ></text>
+</g>
+<g >
+<title>std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;::tuple (1,000,000 samples, 0.81%)</title><rect x="412.9" y="149" width="9.6" height="15.0" fill="rgb(250,185,49)" rx="2" ry="2" />
+<text  x="415.93" y="159.5" ></text>
+</g>
+<g >
+<title>std::has_facet&lt;std::ctype&lt;char&gt; &gt; (5,000,000 samples, 4.07%)</title><rect x="58.0" y="197" width="47.9" height="15.0" fill="rgb(209,171,39)" rx="2" ry="2" />
+<text  x="60.97" y="207.5" >std:..</text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; const&amp;&gt; (1,000,000 samples, 0.81%)</title><rect x="489.7" y="165" width="9.6" height="15.0" fill="rgb(230,194,7)" rx="2" ry="2" />
+<text  x="492.67" y="175.5" ></text>
+</g>
+<g >
+<title>std::__detail::_AllocNode&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::operator (3,000,000 samples, 2.44%)</title><rect x="595.2" y="181" width="28.8" height="15.0" fill="rgb(232,137,36)" rx="2" ry="2" />
+<text  x="598.20" y="191.5" >st..</text>
+</g>
+<g >
+<title>std::_Function_base::_Base_manager&lt;main::{lambda (1,000,000 samples, 0.81%)</title><rect x="921.4" y="181" width="9.6" height="15.0" fill="rgb(250,28,12)" rx="2" ry="2" />
+<text  x="924.38" y="191.5" ></text>
+</g>
+<g >
+<title>HttpRequest::~HttpRequest (3,000,000 samples, 2.44%)</title><rect x="892.6" y="181" width="28.8" height="15.0" fill="rgb(205,197,22)" rx="2" ry="2" />
+<text  x="895.60" y="191.5" >Ht..</text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_deallocate_node (3,000,000 samples, 2.44%)</title><rect x="892.6" y="101" width="28.8" height="15.0" fill="rgb(232,224,20)" rx="2" ry="2" />
+<text  x="895.60" y="111.5" >st..</text>
+</g>
+<g >
+<title>__GI_memchr (1,000,000 samples, 0.81%)</title><rect x="1132.4" y="245" width="9.6" height="15.0" fill="rgb(234,20,16)" rx="2" ry="2" />
+<text  x="1135.44" y="255.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string&lt;std::allocator&lt;char&gt; &gt; (2,000,000 samples, 1.63%)</title><rect x="1113.3" y="261" width="19.1" height="15.0" fill="rgb(214,185,16)" rx="2" ry="2" />
+<text  x="1116.25" y="271.5" ></text>
+</g>
+<g >
+<title>std::basic_ios&lt;char, std::char_traits&lt;char&gt; &gt;::_M_cache_locale (14,000,000 samples, 11.38%)</title><rect x="38.8" y="213" width="134.3" height="15.0" fill="rgb(232,1,31)" rx="2" ry="2" />
+<text  x="41.78" y="223.5" >std::basic_ios&lt;c..</text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node_base*&gt;::allocate (2,000,000 samples, 1.63%)</title><rect x="432.1" y="149" width="19.2" height="15.0" fill="rgb(220,87,49)" rx="2" ry="2" />
+<text  x="435.11" y="159.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string (1,000,000 samples, 0.81%)</title><rect x="403.3" y="117" width="9.6" height="15.0" fill="rgb(248,19,12)" rx="2" ry="2" />
+<text  x="406.33" y="127.5" ></text>
+</g>
+<g >
+<title>strlen@plt (1,000,000 samples, 0.81%)</title><rect x="719.9" y="197" width="9.6" height="15.0" fill="rgb(213,212,30)" rx="2" ry="2" />
+<text  x="722.92" y="207.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Prime_rehash_policy::_M_need_rehash (2,000,000 samples, 1.63%)</title><rect x="384.1" y="197" width="19.2" height="15.0" fill="rgb(254,49,31)" rx="2" ry="2" />
+<text  x="387.15" y="207.5" ></text>
+</g>
+<g >
+<title>operator delete (1,000,000 samples, 0.81%)</title><rect x="911.8" y="37" width="9.6" height="15.0" fill="rgb(234,174,22)" rx="2" ry="2" />
+<text  x="914.79" y="47.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::end (1,000,000 samples, 0.81%)</title><rect x="748.7" y="213" width="9.6" height="15.0" fill="rgb(217,134,8)" rx="2" ry="2" />
+<text  x="751.70" y="223.5" ></text>
+</g>
+<g >
+<title>operator new (2,000,000 samples, 1.63%)</title><rect x="432.1" y="133" width="19.2" height="15.0" fill="rgb(214,35,35)" rx="2" ry="2" />
+<text  x="435.11" y="143.5" ></text>
+</g>
+<g >
+<title>std::char_traits&lt;char&gt;::length (2,000,000 samples, 1.63%)</title><rect x="633.6" y="213" width="19.2" height="15.0" fill="rgb(232,144,4)" rx="2" ry="2" />
+<text  x="636.58" y="223.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::clear (3,000,000 samples, 2.44%)</title><rect x="892.6" y="133" width="28.8" height="15.0" fill="rgb(224,58,37)" rx="2" ry="2" />
+<text  x="895.60" y="143.5" >st..</text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::allocate (1,000,000 samples, 0.81%)</title><rect x="595.2" y="149" width="9.6" height="15.0" fill="rgb(220,219,14)" rx="2" ry="2" />
+<text  x="598.20" y="159.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_deallocate_node (1,000,000 samples, 0.81%)</title><rect x="796.7" y="165" width="9.6" height="15.0" fill="rgb(213,91,25)" rx="2" ry="2" />
+<text  x="799.67" y="175.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::~unordered_map (1,000,000 samples, 0.81%)</title><rect x="796.7" y="229" width="9.6" height="15.0" fill="rgb(252,104,52)" rx="2" ry="2" />
+<text  x="799.67" y="239.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_allocate_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; const&amp;&gt; (3,000,000 samples, 2.44%)</title><rect x="595.2" y="165" width="28.8" height="15.0" fill="rgb(240,94,32)" rx="2" ry="2" />
+<text  x="598.20" y="175.5" >st..</text>
+</g>
+<g >
+<title>std::__detail::_Map_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt;, true&gt;::operator[] (4,000,000 samples, 3.25%)</title><rect x="758.3" y="213" width="38.4" height="15.0" fill="rgb(220,164,7)" rx="2" ry="2" />
+<text  x="761.29" y="223.5" >std..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringbuf&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_pbump (2,000,000 samples, 1.63%)</title><rect x="355.4" y="181" width="19.2" height="15.0" fill="rgb(229,80,25)" rx="2" ry="2" />
+<text  x="358.37" y="191.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::append@plt (1,000,000 samples, 0.81%)</title><rect x="1103.7" y="261" width="9.6" height="15.0" fill="rgb(215,139,51)" rx="2" ry="2" />
+<text  x="1106.66" y="271.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Select1st, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, true&gt;::_M_bucket_index (3,000,000 samples, 2.44%)</title><rect x="451.3" y="181" width="28.8" height="15.0" fill="rgb(229,119,22)" rx="2" ry="2" />
+<text  x="454.30" y="191.5" >st..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_append (1,000,000 samples, 0.81%)</title><rect x="700.7" y="213" width="9.6" height="15.0" fill="rgb(233,112,40)" rx="2" ry="2" />
+<text  x="703.73" y="223.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::deallocate (1,000,000 samples, 0.81%)</title><rect x="796.7" y="133" width="9.6" height="15.0" fill="rgb(249,189,14)" rx="2" ry="2" />
+<text  x="799.67" y="143.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Select1st, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, true&gt;::_M_copy_code (1,000,000 samples, 0.81%)</title><rect x="499.3" y="197" width="9.6" height="15.0" fill="rgb(233,85,14)" rx="2" ry="2" />
+<text  x="502.27" y="207.5" ></text>
+</g>
+<g >
+<title>std::_Hash_impl::hash (1,000,000 samples, 0.81%)</title><rect x="422.5" y="181" width="9.6" height="15.0" fill="rgb(207,211,37)" rx="2" ry="2" />
+<text  x="425.52" y="191.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Select1st, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, true&gt;::_M_h2 (1,000,000 samples, 0.81%)</title><rect x="451.3" y="165" width="9.6" height="15.0" fill="rgb(212,217,8)" rx="2" ry="2" />
+<text  x="454.30" y="175.5" ></text>
+</g>
+<g >
+<title>__GI___memset_generic (3,000,000 samples, 2.44%)</title><rect x="998.1" y="261" width="28.8" height="15.0" fill="rgb(238,8,52)" rx="2" ry="2" />
+<text  x="1001.13" y="271.5" >__..</text>
+</g>
+<g >
+<title>operator new (1,000,000 samples, 0.81%)</title><rect x="480.1" y="133" width="9.6" height="15.0" fill="rgb(230,140,40)" rx="2" ry="2" />
+<text  x="483.08" y="143.5" ></text>
+</g>
+<g >
+<title>std::basic_ios&lt;char, std::char_traits&lt;char&gt; &gt;::init (2,000,000 samples, 1.63%)</title><rect x="211.5" y="229" width="19.2" height="15.0" fill="rgb(249,24,46)" rx="2" ry="2" />
+<text  x="214.46" y="239.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__is_null_pointer&lt;char const&gt; (1,000,000 samples, 0.81%)</title><rect x="1122.8" y="197" width="9.6" height="15.0" fill="rgb(231,215,12)" rx="2" ry="2" />
+<text  x="1125.85" y="207.5" ></text>
+</g>
+<g >
+<title>std::basic_streambuf&lt;char, std::char_traits&lt;char&gt; &gt;::xsputn (3,000,000 samples, 2.44%)</title><rect x="345.8" y="213" width="28.8" height="15.0" fill="rgb(247,67,7)" rx="2" ry="2" />
+<text  x="348.77" y="223.5" >st..</text>
+</g>
+<g >
+<title>std::_Function_base::_Base_manager&lt;main::{lambda (1,000,000 samples, 0.81%)</title><rect x="883.0" y="213" width="9.6" height="15.0" fill="rgb(226,144,35)" rx="2" ry="2" />
+<text  x="886.01" y="223.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1,000,000 samples, 0.81%)</title><rect x="29.2" y="213" width="9.6" height="15.0" fill="rgb(221,195,42)" rx="2" ry="2" />
+<text  x="32.19" y="223.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_M_bucket_index (3,000,000 samples, 2.44%)</title><rect x="451.3" y="197" width="28.8" height="15.0" fill="rgb(251,8,18)" rx="2" ry="2" />
+<text  x="454.30" y="207.5" >st..</text>
+</g>
+<g >
+<title>__GI_strlen (1,000,000 samples, 0.81%)</title><rect x="633.6" y="197" width="9.6" height="15.0" fill="rgb(238,131,11)" rx="2" ry="2" />
+<text  x="636.58" y="207.5" ></text>
+</g>
+<g >
+<title>HttpRequest::~HttpRequest (7,000,000 samples, 5.69%)</title><rect x="508.9" y="261" width="67.1" height="15.0" fill="rgb(223,69,8)" rx="2" ry="2" />
+<text  x="511.86" y="271.5" >HttpReq..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_replace (1,000,000 samples, 0.81%)</title><rect x="259.4" y="229" width="9.6" height="15.0" fill="rgb(225,37,41)" rx="2" ry="2" />
+<text  x="262.43" y="239.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node_base*&gt; &gt;::allocate (2,000,000 samples, 1.63%)</title><rect x="432.1" y="165" width="19.2" height="15.0" fill="rgb(251,218,47)" rx="2" ry="2" />
+<text  x="435.11" y="175.5" ></text>
+</g>
+<g >
+<title>__dynamic_cast (1,000,000 samples, 0.81%)</title><rect x="221.1" y="181" width="9.6" height="15.0" fill="rgb(244,33,13)" rx="2" ry="2" />
+<text  x="224.06" y="191.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char const*&gt; (1,000,000 samples, 0.81%)</title><rect x="1122.8" y="213" width="9.6" height="15.0" fill="rgb(224,66,1)" rx="2" ry="2" />
+<text  x="1125.85" y="223.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string (2,000,000 samples, 1.63%)</title><rect x="729.5" y="213" width="19.2" height="15.0" fill="rgb(229,163,8)" rx="2" ry="2" />
+<text  x="732.51" y="223.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;HttpMethod, std::pair&lt;HttpMethod const, std::function&lt;HttpResponse  (1,000,000 samples, 0.81%)</title><rect x="940.6" y="197" width="9.6" height="15.0" fill="rgb(253,99,3)" rx="2" ry="2" />
+<text  x="943.57" y="207.5" ></text>
+</g>
+<g >
+<title>__GI_memcmp (1,000,000 samples, 0.81%)</title><rect x="1142.0" y="245" width="9.6" height="15.0" fill="rgb(213,180,24)" rx="2" ry="2" />
+<text  x="1145.03" y="255.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_istringstream&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_istringstream (1,000,000 samples, 0.81%)</title><rect x="182.7" y="245" width="9.6" height="15.0" fill="rgb(205,143,34)" rx="2" ry="2" />
+<text  x="185.68" y="255.5" ></text>
+</g>
+<g >
+<title>Server::handle_request (40,000,000 samples, 32.52%)</title><rect x="576.0" y="261" width="383.8" height="15.0" fill="rgb(207,189,49)" rx="2" ry="2" />
+<text  x="579.02" y="271.5" >Server::handle_request</text>
+</g>
+<g >
+<title>HttpRequest::HttpRequest (52,000,000 samples, 42.28%)</title><rect x="10.0" y="261" width="498.9" height="15.0" fill="rgb(230,115,42)" rx="2" ry="2" />
+<text  x="13.00" y="271.5" >HttpRequest::HttpRequest</text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringstream&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::str (4,000,000 samples, 3.25%)</title><rect x="230.7" y="245" width="38.3" height="15.0" fill="rgb(220,147,20)" rx="2" ry="2" />
+<text  x="233.65" y="255.5" >std..</text>
+</g>
+<g >
+<title>std::__detail::_Node_iterator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, false, true&gt;::operator++ (1,000,000 samples, 0.81%)</title><rect x="691.1" y="229" width="9.6" height="15.0" fill="rgb(205,62,42)" rx="2" ry="2" />
+<text  x="694.14" y="239.5" ></text>
+</g>
+<g >
+<title>std::__invoke_impl&lt;HttpResponse, main::{lambda (3,000,000 samples, 2.44%)</title><rect x="892.6" y="197" width="28.8" height="15.0" fill="rgb(235,204,17)" rx="2" ry="2" />
+<text  x="895.60" y="207.5" >st..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string (2,000,000 samples, 1.63%)</title><rect x="192.3" y="245" width="19.2" height="15.0" fill="rgb(243,167,53)" rx="2" ry="2" />
+<text  x="195.28" y="255.5" ></text>
+</g>
+<g >
+<title>_start (123,000,000 samples, 100.00%)</title><rect x="10.0" y="341" width="1180.0" height="15.0" fill="rgb(248,130,12)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >_start</text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;, 0ul&gt; (1,000,000 samples, 0.81%)</title><rect x="403.3" y="133" width="9.6" height="15.0" fill="rgb(214,219,30)" rx="2" ry="2" />
+<text  x="406.33" y="143.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_append (1,000,000 samples, 0.81%)</title><rect x="297.8" y="229" width="9.6" height="15.0" fill="rgb(225,164,52)" rx="2" ry="2" />
+<text  x="300.80" y="239.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::unordered_map (8,000,000 samples, 6.50%)</title><rect x="432.1" y="245" width="76.8" height="15.0" fill="rgb(209,210,18)" rx="2" ry="2" />
+<text  x="435.11" y="255.5" >std::uno..</text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::allocate (1,000,000 samples, 0.81%)</title><rect x="480.1" y="165" width="9.6" height="15.0" fill="rgb(216,23,49)" rx="2" ry="2" />
+<text  x="483.08" y="175.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;&amp;&amp;&gt;, std::tuple&lt;&gt; &gt; (1,000,000 samples, 0.81%)</title><rect x="787.1" y="165" width="9.6" height="15.0" fill="rgb(224,0,9)" rx="2" ry="2" />
+<text  x="790.07" y="175.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (2,000,000 samples, 1.63%)</title><rect x="403.3" y="165" width="19.2" height="15.0" fill="rgb(242,104,19)" rx="2" ry="2" />
+<text  x="406.33" y="175.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char const*&gt; (1,000,000 samples, 0.81%)</title><rect x="1122.8" y="245" width="9.6" height="15.0" fill="rgb(206,81,53)" rx="2" ry="2" />
+<text  x="1125.85" y="255.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (1,000,000 samples, 0.81%)</title><rect x="10.0" y="245" width="9.6" height="15.0" fill="rgb(211,3,33)" rx="2" ry="2" />
+<text  x="13.00" y="255.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_M_insert_unique_node (1,000,000 samples, 0.81%)</title><rect x="758.3" y="197" width="9.6" height="15.0" fill="rgb(254,207,32)" rx="2" ry="2" />
+<text  x="761.29" y="207.5" ></text>
+</g>
+<g >
+<title>__libc_send (6,000,000 samples, 4.88%)</title><rect x="806.3" y="245" width="57.5" height="15.0" fill="rgb(207,182,8)" rx="2" ry="2" />
+<text  x="809.26" y="255.5" >__libc..</text>
+</g>
+<g >
+<title>__GI_memcpy (2,000,000 samples, 1.63%)</title><rect x="1074.9" y="229" width="19.2" height="15.0" fill="rgb(207,114,0)" rx="2" ry="2" />
+<text  x="1077.88" y="239.5" ></text>
+</g>
+<g >
+<title>std::_Hash_bytes (1,000,000 samples, 0.81%)</title><rect x="422.5" y="165" width="9.6" height="15.0" fill="rgb(244,2,50)" rx="2" ry="2" />
+<text  x="425.52" y="175.5" ></text>
+</g>
+<g >
+<title>__cxxabiv1::__vmi_class_type_info::__do_dyncast (1,000,000 samples, 0.81%)</title><rect x="77.2" y="165" width="9.5" height="15.0" fill="rgb(250,198,3)" rx="2" ry="2" />
+<text  x="80.15" y="175.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (2,000,000 samples, 1.63%)</title><rect x="403.3" y="181" width="19.2" height="15.0" fill="rgb(243,175,54)" rx="2" ry="2" />
+<text  x="406.33" y="191.5" ></text>
+</g>
+<g >
+<title>std::use_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt; (1,000,000 samples, 0.81%)</title><rect x="144.3" y="197" width="9.6" height="15.0" fill="rgb(232,58,41)" rx="2" ry="2" />
+<text  x="147.31" y="207.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_M_insert_unique_node (3,000,000 samples, 2.44%)</title><rect x="374.6" y="213" width="28.7" height="15.0" fill="rgb(246,24,38)" rx="2" ry="2" />
+<text  x="377.55" y="223.5" >st..</text>
+</g>
+<g >
+<title>__GI_memcmp (1,000,000 samples, 0.81%)</title><rect x="1170.8" y="229" width="9.6" height="15.0" fill="rgb(215,52,11)" rx="2" ry="2" />
+<text  x="1173.81" y="239.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Prime_rehash_policy::_M_need_rehash (1,000,000 samples, 0.81%)</title><rect x="758.3" y="181" width="9.6" height="15.0" fill="rgb(242,49,21)" rx="2" ry="2" />
+<text  x="761.29" y="191.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt;::allocate (1,000,000 samples, 0.81%)</title><rect x="480.1" y="149" width="9.6" height="15.0" fill="rgb(252,209,14)" rx="2" ry="2" />
+<text  x="483.08" y="159.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char const*&gt; (1,000,000 samples, 0.81%)</title><rect x="624.0" y="181" width="9.6" height="15.0" fill="rgb(218,56,52)" rx="2" ry="2" />
+<text  x="626.98" y="191.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::~_Hashtable (4,000,000 samples, 3.25%)</title><rect x="537.6" y="229" width="38.4" height="15.0" fill="rgb(251,39,27)" rx="2" ry="2" />
+<text  x="540.64" y="239.5" >std..</text>
+</g>
+<g >
+<title>std::__detail::_AllocNode&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::operator (2,000,000 samples, 1.63%)</title><rect x="480.1" y="197" width="19.2" height="15.0" fill="rgb(232,51,36)" rx="2" ry="2" />
+<text  x="483.08" y="207.5" ></text>
+</g>
+<g >
+<title>__dynamic_cast (1,000,000 samples, 0.81%)</title><rect x="105.9" y="181" width="9.6" height="15.0" fill="rgb(213,82,31)" rx="2" ry="2" />
+<text  x="108.93" y="191.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_mutate (1,000,000 samples, 0.81%)</title><rect x="259.4" y="213" width="9.6" height="15.0" fill="rgb(213,113,29)" rx="2" ry="2" />
+<text  x="262.43" y="223.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::deallocate (3,000,000 samples, 2.44%)</title><rect x="892.6" y="69" width="28.8" height="15.0" fill="rgb(245,141,29)" rx="2" ry="2" />
+<text  x="895.60" y="79.5" >st..</text>
+</g>
+<g >
+<title>std::unordered_map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::~unordered_map (3,000,000 samples, 2.44%)</title><rect x="892.6" y="165" width="28.8" height="15.0" fill="rgb(252,13,16)" rx="2" ry="2" />
+<text  x="895.60" y="175.5" >st..</text>
+</g>
+<g >
+<title>std::allocator&lt;char&gt;::~allocator (1,000,000 samples, 0.81%)</title><rect x="681.5" y="213" width="9.6" height="15.0" fill="rgb(227,4,12)" rx="2" ry="2" />
+<text  x="684.54" y="223.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::allocate (1,000,000 samples, 0.81%)</title><rect x="777.5" y="165" width="9.6" height="15.0" fill="rgb(229,18,9)" rx="2" ry="2" />
+<text  x="780.48" y="175.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::~_Hashtable (1,000,000 samples, 0.81%)</title><rect x="796.7" y="213" width="9.6" height="15.0" fill="rgb(229,209,51)" rx="2" ry="2" />
+<text  x="799.67" y="223.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1,000,000 samples, 0.81%)</title><rect x="614.4" y="69" width="9.6" height="15.0" fill="rgb(238,12,36)" rx="2" ry="2" />
+<text  x="617.39" y="79.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (123,000,000 samples, 100.00%)</title><rect x="10.0" y="309" width="1180.0" height="15.0" fill="rgb(253,190,34)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >__libc_start_main</text>
+</g>
+<g >
+<title>std::ios_base::ios_base (1,000,000 samples, 0.81%)</title><rect x="173.1" y="229" width="9.6" height="15.0" fill="rgb(216,156,50)" rx="2" ry="2" />
+<text  x="176.09" y="239.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;true, false, true&gt; &gt;::_Scoped_node::_Scoped_node&lt;std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;&amp;&amp;&gt;, std::tuple&lt;&gt; &gt; (3,000,000 samples, 2.44%)</title><rect x="767.9" y="197" width="28.8" height="15.0" fill="rgb(247,166,28)" rx="2" ry="2" />
+<text  x="770.89" y="207.5" >st..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_create (1,000,000 samples, 0.81%)</title><rect x="1094.1" y="229" width="9.6" height="15.0" fill="rgb(216,160,27)" rx="2" ry="2" />
+<text  x="1097.07" y="239.5" ></text>
+</g>
+<g >
+<title>__dynamic_cast (2,000,000 samples, 1.63%)</title><rect x="153.9" y="181" width="19.2" height="15.0" fill="rgb(242,43,13)" rx="2" ry="2" />
+<text  x="156.90" y="191.5" ></text>
+</g>
+<g >
+<title>operator new (1,000,000 samples, 0.81%)</title><rect x="614.4" y="85" width="9.6" height="15.0" fill="rgb(220,217,48)" rx="2" ry="2" />
+<text  x="617.39" y="95.5" ></text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::pair (2,000,000 samples, 1.63%)</title><rect x="604.8" y="117" width="19.2" height="15.0" fill="rgb(236,213,34)" rx="2" ry="2" />
+<text  x="607.80" y="127.5" ></text>
+</g>
+<g >
+<title>std::basic_ios&lt;char, std::char_traits&lt;char&gt; &gt;::_M_cache_locale (2,000,000 samples, 1.63%)</title><rect x="211.5" y="213" width="19.2" height="15.0" fill="rgb(229,69,0)" rx="2" ry="2" />
+<text  x="214.46" y="223.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, true&gt; &gt; &gt;::_M_allocate_buckets (2,000,000 samples, 1.63%)</title><rect x="432.1" y="181" width="19.2" height="15.0" fill="rgb(221,202,45)" rx="2" ry="2" />
+<text  x="435.11" y="191.5" ></text>
+</g>
+<g >
+<title>std::basic_ios&lt;char, std::char_traits&lt;char&gt; &gt;::init (14,000,000 samples, 11.38%)</title><rect x="38.8" y="229" width="134.3" height="15.0" fill="rgb(229,175,4)" rx="2" ry="2" />
+<text  x="41.78" y="239.5" >std::basic_ios&lt;c..</text>
+</g>
+</g>
+</svg>
